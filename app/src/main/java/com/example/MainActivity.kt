@@ -64,11 +64,20 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        
+        // Initialize AdMob & gather UMP GDPR consent
+        com.example.ads.AdManager.initialize(this)
+
         setContent {
             MyApplicationTheme {
                 MainScreen()
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        com.example.ads.AdManager.destroy()
     }
 }
 
@@ -77,13 +86,43 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    val currentScreen = viewModel.currentScreen
+    val activity = context as? android.app.Activity
+    LaunchedEffect(currentScreen) {
+        if (currentScreen == Screen.CanvasEditor) {
+            if (activity != null) {
+                com.example.ads.InterstitialManager.showIfReady(activity, forceIgnoreFrequency = false) {
+                    android.util.Log.i("MainScreen", "Ad completed or skipped, entering canvas editor.")
+                }
+            }
+        }
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
             if (viewModel.currentScreen != Screen.CanvasEditor) {
                 TopAppBarComponent(
                     quotaLeft = viewModel.dailyQuotaLeft,
-                    onResetQuota = { viewModel.resetQuota() }
+                    onResetQuota = {
+                        val activity = context as? android.app.Activity
+                        if (activity != null) {
+                            if (com.example.ads.RewardedManager.isAdReady()) {
+                                Toast.makeText(context, "Loading Divine Video to Restore Quota...", Toast.LENGTH_SHORT).show()
+                                com.example.ads.RewardedManager.showIfReady(activity, onUserEarnedReward = { reward ->
+                                    viewModel.resetQuota()
+                                    Toast.makeText(context, "Divine Quota fully restored!", Toast.LENGTH_LONG).show()
+                                }, onAdClosedCallback = {})
+                            } else {
+                                // Ad not ready or failed to load, fall back gracefully to restore quota directly
+                                viewModel.resetQuota()
+                                Toast.makeText(context, "Divine Quota fully restored!", Toast.LENGTH_SHORT).show()
+                                com.example.ads.RewardedManager.preload(activity) // Preload for next time
+                            }
+                        } else {
+                            viewModel.resetQuota()
+                        }
+                    }
                 )
             }
         },
@@ -544,26 +583,11 @@ fun HomeScreen(viewModel: MainViewModel) {
             }
         }
 
-        // Ad banner placeholder
+        // Real AdMob Banner Ad
         item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF16161B)),
-                border = BorderStroke(1.dp, Color(0xFF2A2A30)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-            ) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "ADMOB BANNER PLACEHOLDER",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            color = Color(0xFFA0A0AA).copy(alpha = 0.5f),
-                            letterSpacing = 3.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    )
-                }
-            }
+            com.example.ads.BannerAdManager.BannerAdView(
+                modifier = Modifier.fillMaxWidth()
+            )
         }
 
         // One-tap Bhakti mode suggestions (Module 14)
@@ -900,14 +924,28 @@ fun CanvasEditorScreen(viewModel: MainViewModel) {
                 // HD Download Export Button
                 Button(
                     onClick = {
-                        Toast.makeText(context, "HD status rendered! Ready to Share.", Toast.LENGTH_LONG).show()
-                        // Open share sheet simulator
-                        val shareIntent = Intent().apply {
-                            action = Intent.ACTION_SEND
-                            putExtra(Intent.EXTRA_TEXT, "Created this beautiful Khatu Shyam status poster using Shyam AI Status App!")
-                            type = "text/plain"
+                        val activity = context as? android.app.Activity
+                        if (activity != null) {
+                            com.example.ads.InterstitialManager.showIfReady(activity, forceIgnoreFrequency = true) {
+                                Toast.makeText(context, "HD status rendered! Ready to Share.", Toast.LENGTH_LONG).show()
+                                // Open share sheet simulator
+                                val shareIntent = Intent().apply {
+                                    action = Intent.ACTION_SEND
+                                    putExtra(Intent.EXTRA_TEXT, "Created this beautiful Khatu Shyam status poster using Shyam AI Status App!")
+                                    type = "text/plain"
+                                }
+                                context.startActivity(Intent.createChooser(shareIntent, "Share Divine Poster"))
+                            }
+                        } else {
+                            Toast.makeText(context, "HD status rendered! Ready to Share.", Toast.LENGTH_LONG).show()
+                            // Open share sheet simulator
+                            val shareIntent = Intent().apply {
+                                action = Intent.ACTION_SEND
+                                putExtra(Intent.EXTRA_TEXT, "Created this beautiful Khatu Shyam status poster using Shyam AI Status App!")
+                                type = "text/plain"
+                            }
+                            context.startActivity(Intent.createChooser(shareIntent, "Share Divine Poster"))
                         }
-                        context.startActivity(Intent.createChooser(shareIntent, "Share Divine Poster"))
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9933)),
                     shape = RoundedCornerShape(8.dp),
@@ -1605,6 +1643,11 @@ fun LibraryScreen(viewModel: MainViewModel) {
                 }
             }
         }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        com.example.ads.BannerAdManager.BannerAdView(
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 
     // Rename project dialog
@@ -1643,14 +1686,17 @@ fun LibraryScreen(viewModel: MainViewModel) {
 // ==========================================
 @Composable
 fun ProfileScreen(viewModel: MainViewModel) {
-    var generatedCount by remember { mutableStateOf(5) }
+    val prefs by viewModel.userPreferences.collectAsState(initial = null)
+    val history by viewModel.promptHistoryList.collectAsState(initial = emptyList())
+    val generatedCount = history.size
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
         // Devotional avatar representation
         Box(
@@ -1695,7 +1741,7 @@ fun ProfileScreen(viewModel: MainViewModel) {
                 horizontalArrangement = Arrangement.SpaceAround
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("AI Creas", fontWeight = FontWeight.Bold, color = Color(0xFFA0A0AA), style = MaterialTheme.typography.labelSmall)
+                    Text("AI Generations", fontWeight = FontWeight.Bold, color = Color(0xFFA0A0AA), style = MaterialTheme.typography.labelSmall)
                     Text("$generatedCount", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFFB000))
                 }
                 Box(
@@ -1707,6 +1753,67 @@ fun ProfileScreen(viewModel: MainViewModel) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Limit Quota", fontWeight = FontWeight.Bold, color = Color(0xFFA0A0AA), style = MaterialTheme.typography.labelSmall)
                     Text("${viewModel.dailyQuotaLeft}/3", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFFB000))
+                }
+            }
+        }
+
+        // Preferences Card (Dynamic Room Persistence)
+        prefs?.let { p ->
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF16161B)),
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFF2A2A30), RoundedCornerShape(20.dp))
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "USER PREFERENCES (ROOM)",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold, color = Color(0xFFA0A0AA))
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Active App Theme", style = MaterialTheme.typography.bodyMedium, color = Color(0xFFE2E2E6))
+                        Text(p.selectedTheme, fontWeight = FontWeight.Bold, color = Color(0xFFFFB000), style = MaterialTheme.typography.bodyMedium)
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Language Context", style = MaterialTheme.typography.bodyMedium, color = Color(0xFFE2E2E6))
+                        Text(p.language, fontWeight = FontWeight.Bold, color = Color(0xFFFFB000), style = MaterialTheme.typography.bodyMedium)
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Mantra Notifications", style = MaterialTheme.typography.bodyMedium, color = Color(0xFFE2E2E6))
+                        Switch(
+                            checked = p.notificationsEnabled,
+                            onCheckedChange = { checked ->
+                                viewModel.updatePreferences(
+                                    theme = p.selectedTheme,
+                                    lastStyle = p.lastStyle,
+                                    language = p.language,
+                                    notifications = checked
+                                )
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFFFFB000),
+                                checkedTrackColor = Color(0xFFFFB000).copy(alpha = 0.5f),
+                                uncheckedThumbColor = Color(0xFFA0A0AA),
+                                uncheckedTrackColor = Color(0xFF242429)
+                            )
+                        )
+                    }
                 }
             }
         }
@@ -1748,8 +1855,6 @@ fun ProfileScreen(viewModel: MainViewModel) {
                 }
             }
         }
-
-        Spacer(modifier = Modifier.weight(1f))
 
         // Brand signature
         Text(

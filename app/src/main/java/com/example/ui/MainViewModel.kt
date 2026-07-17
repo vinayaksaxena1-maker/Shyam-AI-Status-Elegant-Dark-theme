@@ -9,6 +9,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.*
+import com.example.database.AppDatabase
+import com.example.entity.*
+import com.example.dao.*
+import com.example.repository.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -30,14 +34,154 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val db = AppDatabase.getDatabase(application)
     private val repository = ProjectRepository(db.projectDao())
+    private val geminiRepository: GeminiRepository = GeminiRepositoryImpl()
 
-    // All saved projects
+    val roomRepository: RoomRepository = RoomRepositoryImpl(
+        savedProjectDao = db.savedProjectDao(),
+        promptHistoryDao = db.promptHistoryDao(),
+        preferenceDao = db.preferenceDao()
+    )
+
+    // All saved projects (original Entity)
     val savedProjects: StateFlow<List<Project>> = repository.allProjects
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
         )
+
+    // All saved project entities (New Entity)
+    val savedProjectEntities: StateFlow<List<SavedProjectEntity>> = roomRepository.observeAllProjects()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    // AI Prompt History Flow
+    val promptHistoryList: StateFlow<List<PromptHistoryEntity>> = roomRepository.observeRecentPromptHistory()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    // User Preferences Flow
+    val userPreferences: StateFlow<UserPreferenceEntity?> = roomRepository.observePreferences()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = null
+        )
+
+    init {
+        // Initialize user preferences with default values if not present
+        viewModelScope.launch {
+            try {
+                val currentPrefs = roomRepository.getPreferences()
+                if (currentPrefs == null) {
+                    roomRepository.savePreferences(
+                        UserPreferenceEntity(
+                            id = 1,
+                            selectedTheme = "Premium Dark",
+                            lastStyle = "Bhakti Style",
+                            language = "Hindi/Sanskrit",
+                            notificationsEnabled = true
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // Preferences operations
+    fun updatePreferences(theme: String, lastStyle: String, language: String, notifications: Boolean) {
+        viewModelScope.launch {
+            try {
+                roomRepository.savePreferences(
+                    UserPreferenceEntity(
+                        id = 1,
+                        selectedTheme = theme,
+                        lastStyle = lastStyle,
+                        language = language,
+                        notificationsEnabled = notifications
+                    )
+                )
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // CRUD operations for SavedProjectEntity
+    fun saveProjectEntity(entity: SavedProjectEntity) {
+        viewModelScope.launch {
+            try {
+                roomRepository.insertProject(entity)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun updateProjectEntity(entity: SavedProjectEntity) {
+        viewModelScope.launch {
+            try {
+                roomRepository.updateProject(entity)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun deleteProjectEntity(entity: SavedProjectEntity) {
+        viewModelScope.launch {
+            try {
+                roomRepository.deleteProject(entity)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun deleteProjectEntityById(id: Int) {
+        viewModelScope.launch {
+            try {
+                roomRepository.deleteProjectById(id)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun duplicateProjectEntity(entity: SavedProjectEntity) {
+        viewModelScope.launch {
+            try {
+                val duplicated = entity.copy(
+                    id = 0,
+                    title = "${entity.title} (Copy)",
+                    createdAt = System.currentTimeMillis(),
+                    updatedAt = System.currentTimeMillis()
+                )
+                roomRepository.insertProject(duplicated)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // Prompt History operations
+    fun clearPromptHistory() {
+        viewModelScope.launch {
+            try {
+                roomRepository.deleteAllPromptHistory()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
 
     // Current screen
     var currentScreen by mutableStateOf<Screen>(Screen.Home)
@@ -387,7 +531,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             
             val prompt = "Enhance this devotional prompt: '$aiPromptInput' in style: '$selectedAiStyle'."
             
-            val result = GeminiClient.generateDevotionalText(prompt, systemInstruction)
+            val resultState = geminiRepository.generateDevotionalText(prompt, systemInstruction)
+            val result = when (resultState) {
+                is GeminiResult.Success -> {
+                    try {
+                        roomRepository.insertPromptHistory(
+                            PromptHistoryEntity(
+                                prompt = aiPromptInput,
+                                response = resultState.data,
+                                timestamp = System.currentTimeMillis()
+                            )
+                        )
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                    resultState.data
+                }
+                is GeminiResult.Error -> "Error: ${resultState.message}"
+            }
             
             // Simulating image generation matching the selected style
             // We map style to one of our gorgeous premium design templates to keep the app 100% responsive and offline-resilient
