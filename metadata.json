@@ -1,0 +1,6 @@
+{
+  "name": "Shyam AI Status",
+  "description": "Create professional Khatu Shyam, Krishna, and devotional posters with AI-powered background generation, frames, divine text styles, stickers, and a Canvas Editor.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
